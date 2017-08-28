@@ -3,16 +3,22 @@ using System.Collections.Generic;
 using System.Dynamic;
 using System.IO;
 using System.Linq;
+using System.Text.RegularExpressions;
 using Manatee.Trello;
 using NDesk.Options.Fork;
 using NDesk.Options.Fork.Common;
+using RazorEngine;
+using RazorEngine.Compilation.ReferenceResolver;
+using RazorEngine.Configuration;
+using RazorEngine.Templating;
+using RazorEngine.Text;
 
 namespace TrestusDotNet
 {
-    class Program
+    public class Program
     {
         const string StatusPrefix = "status:";
-            
+
         public enum Severity
         {
             None,
@@ -44,15 +50,71 @@ namespace TrestusDotNet
         {
             public string Id { get; set; }
             public string Name { get; set; }
-            public LabelColor? Color { get; set;}
+            public LabelColor? Color { get; set; }
         }
 
         public class CardDto
         {
+            public CardDto()
+            {
+                Systems = new List<string>();
+                ParsedComments = new List<CommentDto>();
+            }
+            public string Name { get; set; }
+            public DateTime CreateDate { get; set; }
             public Severity Severity { get; set; }
             public bool Closed { get; set; }
             public string HtmlDescription { get; set; }
+            public List<string> Systems { get; set; }
             public List<CommentDto> ParsedComments { get; set; }
+        }
+
+        public class DataTemplate
+        {
+            public Dictionary<Severity, List<List<string>>> Panels { get; set; }
+            public List<CardDto> Incidents { get; set; }
+            public Dictionary<string, SystemDto> Systems { get; set; }
+        }
+        
+        public class MyHtmlHelper
+        {
+            public IEncodedString Raw(string rawString)
+            {
+                return new RawString(rawString);
+            }
+
+            public IEncodedString Humanize(string rawString)
+            {
+                return new RawString(rawString);
+            }
+
+            public IEncodedString Humanize(Severity severity, bool lowerCase = false)
+            {
+                var rawString = ToSentenceCase(severity.ToString());
+                if (lowerCase)
+                    rawString = rawString.ToLower();
+                return new RawString(rawString);
+            }
+
+            public static string ToSentenceCase(string str)
+            {
+                return Regex.Replace(str, "[a-z][A-Z]", m => m.Value[0] + " " + char.ToLower(m.Value[1]));
+            }
+
+            public IEncodedString Capitalize(string rawString)
+            {
+                return new RawString(rawString);
+            }
+        }
+
+        public class CustomHtmlTemplate<T> : HtmlTemplateBase<T>
+        {
+            public CustomHtmlTemplate()
+            {
+                Html = new MyHtmlHelper();
+            }
+
+            public MyHtmlHelper Html { get; set; }
         }
 
         static void Main(string[] args)
@@ -110,7 +172,7 @@ namespace TrestusDotNet
             var markdown = new HeyRed.MarkdownSharp.Markdown();
 
             var board = client.GetBoard(options.BoardId);
-            var labels = board.Labels.Select(x => new LabelDto() { Color = x.Color, Id = x.Id, Name = x.Name}).ToList();
+            var labels = board.Labels.Select(x => new LabelDto() { Color = x.Color, Id = x.Id, Name = x.Name }).ToList();
             var serviceLabels = labels.Where(x => !x.Name.StartsWith(StatusPrefix)).ToArray();
             var serviceIds = serviceLabels.Select(x => x.Id).ToArray();
             var statusTypes = labels.Where(x => !serviceLabels.Contains(x)).ToArray();
@@ -125,7 +187,11 @@ namespace TrestusDotNet
                 var cards = cardList.Cards.OrderByDescending(x => x.CreationDate).ToList();
                 foreach (var card in cards)
                 {
-                    CardDto cardDto = new CardDto();
+                    CardDto cardDto = new CardDto()
+                    {
+                        Name = card.Name,
+                        CreateDate = card.CreationDate
+                    };
                     Severity severity = Severity.None;
                     foreach (var label in card.Labels)
                     {
@@ -146,7 +212,7 @@ namespace TrestusDotNet
                     if (cardServiceLabels.Count == 0 || severity == Severity.None)
                         continue;
 
-                    if (cardList.Name == "fixed")
+                    if (string.Equals(cardList.Name, "fixed", StringComparison.OrdinalIgnoreCase))
                     {
                         cardDto.Closed = true;
                     }
@@ -202,17 +268,23 @@ namespace TrestusDotNet
                     Severity = Severity.None
                 };
             }
-            
 
-            dynamic templateData = new ExpandoObject();
-            templateData.incidents = incidents;
-            templateData.panels = panels;
-            templateData.systems = systems;
+            var dataTemplate = new DataTemplate
+            {
+                Incidents = incidents,
+                Systems = systems,
+                Panels = panels
+            };
 
-            
-            // TODO: process alternate templates
-            Func<object, string> render;
-            using (var stream = typeof(Program).Assembly.GetManifestResourceStream("TrestusDotNet.Templates.trestus.html"))
+            var config = new TemplateServiceConfiguration
+            {
+                ReferenceResolver = new UseCurrentAssembliesReferenceResolver(),
+                BaseTemplateType = typeof(CustomHtmlTemplate<>)
+            };
+            config.EncodedStringFactory = new RawStringFactory();
+            string html;
+            using (var engineService = RazorEngineService.Create(config))
+            using (var stream = typeof(Program).Assembly.GetManifestResourceStream("TrestusDotNet.Templates.trestus.cshtml"))
             {
                 if (stream == null)
                     throw new InvalidOperationException("Could not load embedded stream for the html template");
@@ -220,13 +292,25 @@ namespace TrestusDotNet
                 using (var reader = new StreamReader(stream))
                 {
                     var template = reader.ReadToEnd();
-                    render = HandlebarsDotNet.Handlebars.Compile(template);
+                    html = engineService.RunCompile(template, "templateKey", typeof(DataTemplate), dataTemplate);
                 }
             }
-
-            var html = render(templateData);
-
+            
             Console.WriteLine(html);
+
+            if (!string.IsNullOrEmpty(options.OutputPath))
+            {
+                var f = new FileInfo(options.OutputPath);
+                using (var sw = new StreamWriter(f.FullName))
+                {
+                    sw.WriteLine(html);
+                    sw.Flush();
+                }
+            }
+            else
+            {
+                Console.ReadLine();
+            }
         }
     }
 }

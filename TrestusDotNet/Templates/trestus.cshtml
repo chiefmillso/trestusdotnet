@@ -1,0 +1,123 @@
+﻿@using System.Collections.Generic
+@using System.Linq
+@using Manatee.Trello
+@using TrestusDotNet
+@model TrestusDotNet.Program.DataTemplate
+
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="robots" content="index, follow">
+    <title>Status</title>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300italic,700,700italic">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/normalize/3.0.3/normalize.css">
+    <link rel="stylesheet" href="trestus.css">
+</head>
+<body>
+
+<main class="wrapper">
+
+    <nav class="navigation">
+        <section class="container">
+            <a class="navigation-title" href="">
+                <h1 class="title">System Status</h1>
+            </a>
+        </section>
+    </nav>
+
+    <section class="container" id="main">
+        @if (Model.Panels.Count == 0)
+        {
+            <div class="panel operational">
+                All Systems operational.
+            </div>
+        }
+        else
+        {
+            foreach (var p in Model.Panels)
+            {
+                var isFirst = true;
+                var severity = p.Key;
+                var systems = p.Value as List<List<string>>;
+                <div class="panel @Html.Humanize(severity, true)">
+                    @Html.Humanize(severity) on @foreach (var s in systems.SelectMany(x => x))
+                                 {
+                                     if (!isFirst)
+                                     {
+                                         <span>, </span>
+                                     }
+                                     @s
+                                     {
+                                         isFirst = false;
+                                     }
+                                 }
+                </div>
+            }
+        }
+        
+
+        <h4>Systems</h4>
+        <ul class="systems">
+            @foreach (var s in Model.Systems)
+            {
+                var severity = s.Value.Severity;
+                var status = s.Value.Status;
+                if (string.IsNullOrEmpty(s.Key))
+                {
+                    continue;
+                }
+                <li><span>@s.Key</span><span class="status @status.ToLower() @Html.Humanize(severity, true)">@status</span></li>
+            }
+        </ul>
+
+        <h4>Incidents</h4>
+        @if (Model.Incidents.Count >= 0)
+        {
+            foreach (var incident in Model.Incidents)
+            {
+                <div class="incident">
+                    <span class="date">@incident.CreateDate UTC</span>
+
+                    @if (incident.Closed)
+                    {
+                        <span class="label operational float-right">resolved</span>
+                    }
+                    else
+                    {
+                        <span class="label @incident.Severity.ToString().ToLower() float-right">@incident.Severity</span>
+                    }
+                    @foreach (var system in incident.Systems)
+                    {
+                        <span class="label system float-right">@system</span>
+                    }
+                    <hr/>
+                    <span class="title">@incident.Name</span>
+                    @Html.Raw(incident.HtmlDescription)
+                    @foreach (var comment in incident.ParsedComments)
+                    {
+                        <p>
+                            <em>Update @comment.ParsedDate UTC by @comment.MemberCreator.Initials</em><br/>
+                            @Html.Raw(comment.HtmlDescription)
+                        </p>
+                    }
+                </div>
+            }
+        }
+        else
+        {
+            <em>There are currently no known incidents. \o/</em>
+        }
+    </section>
+
+
+    <footer class="footer">
+        <section class="container">
+            <hr/>
+        </section>
+    </footer>
+
+</main>
+
+</body>
+</html>
