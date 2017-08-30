@@ -243,7 +243,7 @@ namespace TrestusDotNet
                     var comments = card.Comments;
                     foreach (var comment in comments)
                     {
-                        var initials = comment.Creator.Initials ?? string.Join("", (comment.Creator.FullName ?? "").Split(' ').ToList().Select(x => x[0]));
+                        var initials = comment.Creator.Initials ?? string.Join("", comment.Creator.FullName.Split(' ').ToList().Select(x => x[0]));
                         var commentDto = new CommentDto
                         {
                             ParsedDate = comment.Date,
