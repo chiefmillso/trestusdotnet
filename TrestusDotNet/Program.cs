@@ -4,14 +4,10 @@ using System.Dynamic;
 using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
+using DotLiquid;
 using Manatee.Trello;
 using NDesk.Options.Fork;
 using NDesk.Options.Fork.Common;
-using RazorEngine;
-using RazorEngine.Compilation.ReferenceResolver;
-using RazorEngine.Configuration;
-using RazorEngine.Templating;
-using RazorEngine.Text;
 
 namespace TrestusDotNet
 {
@@ -62,6 +58,8 @@ namespace TrestusDotNet
             }
             public string Name { get; set; }
             public DateTime CreateDate { get; set; }
+
+            public string CreateDateText => CreateDate.ToString("f");
             public Severity Severity { get; set; }
             public bool Closed { get; set; }
             public string HtmlDescription { get; set; }
@@ -69,52 +67,56 @@ namespace TrestusDotNet
             public List<CommentDto> ParsedComments { get; set; }
         }
 
+        public class PanelCollection
+        {
+            public PanelCollection()
+            {
+                Services = new List<string>();
+            }
+
+            public List<string> Services { get; set; }
+
+            public void Add(List<string> labels)
+            {
+                Services.AddRange(labels);
+            }
+        }
+
         public class DataTemplate
         {
-            public Dictionary<Severity, List<List<string>>> Panels { get; set; }
+            public Dictionary<Severity, PanelCollection> Panels { get; set; }
             public List<CardDto> Incidents { get; set; }
             public Dictionary<string, SystemDto> Systems { get; set; }
         }
-        
-        public class MyHtmlHelper
+
+        public static class TextFilter
         {
-            public IEncodedString Raw(string rawString)
+            public static string Textilize(string input)
             {
-                return new RawString(rawString);
+                return ToSentenceCase(input);
             }
-
-            public IEncodedString Humanize(string rawString)
-            {
-                return new RawString(rawString);
-            }
-
-            public IEncodedString Humanize(Severity severity, bool lowerCase = false)
-            {
-                var rawString = ToSentenceCase(severity.ToString());
-                if (lowerCase)
-                    rawString = rawString.ToLower();
-                return new RawString(rawString);
-            }
-
+            
             public static string ToSentenceCase(string str)
             {
+                if (str == null)
+                    return null;
                 return Regex.Replace(str, "[a-z][A-Z]", m => m.Value[0] + " " + char.ToLower(m.Value[1]));
-            }
-
-            public IEncodedString Capitalize(string rawString)
-            {
-                return new RawString(rawString);
             }
         }
 
-        public class CustomHtmlTemplate<T> : HtmlTemplateBase<T>
+        public static void RegisterSafeTypes(params Type[] types)
         {
-            public CustomHtmlTemplate()
-            {
-                Html = new MyHtmlHelper();
-            }
+            foreach (var type in types)
+                RegisterSafeTypeWithAllProperties(type);
+        }
 
-            public MyHtmlHelper Html { get; set; }
+        public static void RegisterSafeTypeWithAllProperties(Type type)
+        {
+            Template.RegisterSafeType(type,
+                type
+                    .GetProperties()
+                    .Select(p => p.Name)
+                    .ToArray());
         }
 
         static void Main(string[] args)
@@ -179,7 +181,7 @@ namespace TrestusDotNet
             var lists = board.Lists;
 
             var incidents = new List<CardDto>();
-            var panels = new Dictionary<Severity, List<List<string>>>();
+            var panels = new Dictionary<Severity, PanelCollection>();
             var systems = new Dictionary<string, SystemDto>();
 
             foreach (var cardList in lists)
@@ -219,7 +221,7 @@ namespace TrestusDotNet
                     else
                     {
                         if (!panels.ContainsKey(cardDto.Severity))
-                            panels[severity] = new List<List<string>>();
+                            panels[severity] = new PanelCollection();
                         panels[severity].Add(cardServiceLabels);
 
                         foreach (var service in cardServiceLabels)
@@ -241,13 +243,14 @@ namespace TrestusDotNet
                     var comments = card.Comments;
                     foreach (var comment in comments)
                     {
+                        var initials = comment.Creator.Initials ?? string.Join("", (comment.Creator.FullName ?? "").Split(' ').ToList().Select(x => x[0]));
                         var commentDto = new CommentDto
                         {
                             ParsedDate = comment.Date,
                             HtmlDescription = markdown.Transform(comment.Data.Text),
                             MemberCreator = new MemberDto()
                             {
-                                Initials = comment.Creator.Initials
+                                Initials = initials
                             }
                         };
                         cardDto.ParsedComments.Add(commentDto);
@@ -260,6 +263,9 @@ namespace TrestusDotNet
             foreach (var label in serviceLabels)
             {
                 if (systems.ContainsKey(label.Name))
+                    continue;
+
+                if (string.IsNullOrEmpty(label.Name))
                     continue;
 
                 systems[label.Name] = new SystemDto()
@@ -276,14 +282,13 @@ namespace TrestusDotNet
                 Panels = panels
             };
 
-            var config = new TemplateServiceConfiguration
-            {
-                ReferenceResolver = new UseCurrentAssembliesReferenceResolver(),
-                BaseTemplateType = typeof(CustomHtmlTemplate<>)
-            };
-            config.EncodedStringFactory = new RawStringFactory();
+            RegisterSafeTypes(typeof(CardDto), typeof(CommentDto), typeof(DataTemplate), typeof(LabelDto), typeof(MemberDto), typeof(PanelCollection), typeof(SystemDto));
+            Template.RegisterSafeType(typeof(Severity), s => s.ToString());
+            Template.RegisterSafeType(typeof(KeyValuePair<Severity, PanelCollection>), new [] { "Key", "Value" });
+            Template.RegisterSafeType(typeof(KeyValuePair<string, SystemDto>), new [] { "Key", "Value" });
+            Template.RegisterFilter(typeof(TextFilter));
+
             string html;
-            using (var engineService = RazorEngineService.Create(config))
             using (var stream = typeof(Program).Assembly.GetManifestResourceStream("TrestusDotNet.Templates.trestus.cshtml"))
             {
                 if (stream == null)
@@ -292,10 +297,12 @@ namespace TrestusDotNet
                 using (var reader = new StreamReader(stream))
                 {
                     var template = reader.ReadToEnd();
-                    html = engineService.RunCompile(template, "templateKey", typeof(DataTemplate), dataTemplate);
+
+                    var parsedTemplate = Template.Parse(template);
+                    html = parsedTemplate.Render(Hash.FromAnonymousObject(dataTemplate));
                 }
             }
-            
+
             Console.WriteLine(html);
 
             if (!string.IsNullOrEmpty(options.OutputPath))
